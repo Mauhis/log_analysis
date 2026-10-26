@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+build/
+dist/
+# Generated analysis reports (including reports created for other intervals).
+report*.json
+report*.txt
+reports/
+
+# Interactive tool history and local secrets/configuration.
+.Rhistory
+.env
+.env.*
+!.env.example
+.aws/
+.codex/
