@@ -11,13 +11,19 @@ Requires Python 3.10+ and an available `journalctl` command. Python 3.12 on Ubun
 24.04 meets the Python requirement. Runtime and test code use only the standard
 library; running from the project directory needs no package installation.
 
-Run from this directory:
+Clone the repository and run from its directory:
+
+```sh
+git clone https://github.com/Mauhis/log_analysis.git
+cd log_analysis
+```
+
+Create a report:
 
 ```sh
 python3 -m log_analyzer --since '1 hour ago' --limit 10000 > report.json
 python3 -m log_analyzer --since '1 hour ago' --format txt --output report.txt
 python3 -m log_analyzer --since '24 hours ago' --limit 100000 --format txt --output report-24h.txt
-python3 -m unittest discover -s tests -v
 ```
 
 The default command `python3 -m log_analyzer` analyzes **one hour**, retaining up
@@ -50,17 +56,65 @@ or multiline messages that make a plain line count misleading.
 JSON goes to stdout by default. Use `--format txt` for a readable text report with
 counts, warnings, findings, investigation explanations, and sample evidence.
 `--output PATH` writes either format to a UTF-8 file, overwriting it if it exists;
-relative paths use your current directory. For example, with the shell alias:
-`log-analyzer --format txt --output report.txt`.
-Control characters in text evidence are escaped to keep log content inert.
+relative paths use your current directory. If you have configured the
+`log-analyzer` shell alias, it accepts the same options from any directory.
+Control characters in text evidence and metadata are escaped to keep log content
+inert. Generated `report*.txt`, `report*.json`, and files inside `reports/` are
+excluded from Git by the project's `.gitignore`.
 Exit status 1 means no usable events were collected; 2 means invalid
 arguments/configuration or an output error; 0 means events were analyzed,
 including when findings exist. A partial scan with usable events also returns 0:
 inspect collection coverage and warnings instead of using exit status as a
-completeness or security verdict. Journal errors and
-observed permission diagnostics are included in report warnings. Root is not required;
+completeness or security verdict. Journal errors and observed permission
+diagnostics are included in report warnings. Root is not required;
 the application does not change permissions. A normal account may have little
 or no access to system logs. Empty results do not establish absence of threats.
+
+## Detailed report contents
+
+Both JSON and text reports include a collection overview, descriptive statistics,
+detection configuration, and findings with investigation explanations. Generate
+a detailed 24-hour report:
+
+```sh
+python3 -m log_analyzer --since '24 hours ago' --limit 100000 --format txt --output report-detailed-24h.txt
+```
+
+| Report area | Included information |
+| --- | --- |
+| Collection coverage | Requested interval, available/observed/retained/analyzed counts, parsing discards, limit omissions, completion, truncation, permission diagnostics. |
+| Actual data range | Earliest and latest analyzed timestamps, observed span, and analyzed percentage of readable availability when known. |
+| Volume and sources | Record counts and text-report percentages for SSH, sudo, firewall, kernel, systemd, and other records. |
+| Journal priorities | Emergency through debug counts plus unknown priority; these are distinct from detector finding severities. |
+| Hosts and emitters | Distinct populated hosts, units, and identifiers, plus the ten most frequent values for each. |
+| Metadata quality | Missing/empty host, unit, identifier, message, and priority counts after normalization. |
+| Authentication indicators | SSH and sudo failure records, SSH accepted-credential records, and sudo session-open records. |
+| Network indicators | UFW block/reject records, extracted source-IP counts, distinct IPs, repeated IP/host groups, and the ten busiest groups with source categories and failure/block counts in JSON. |
+| Hourly volume | Observed UTC hourly buckets. Text shows at most the 24 busiest hours; JSON keeps every observed bucket. |
+| Detection scope | Enabled rule definitions, per-rule finding totals, findings by severity, and records inside/outside configured source categories. |
+| Text size | UTF-8 bytes in normalized message text, excluding journal metadata and storage overhead. |
+
+Statistics describe **analyzed records only**. A truncated sample can look quite
+different from the full requested interval. Rankings are ordered by count with
+deterministic ties; totals and distinct counts include entries outside the top
+ten. Missing metadata is counted separately from populated-value rankings.
+The observed timestamp span is not a measure of continuous coverage or uptime.
+Unobserved hourly buckets are omitted, and boundary hours can be partial.
+
+Authentication indicators use English substring heuristics and count records,
+not unique attempts, accounts, or sessions. Several failure phrases in one record
+count once. Success/session-open indicators do not prove a privileged command
+succeeded. Repeated addresses are grouped separately per host and can represent
+normal activity, shared addresses, or spoofed log text. No DNS lookups are made.
+
+JSON reports use **schema version 3**, with `collection`, `summary`, `analysis`,
+`findings`, and `warnings` fields alongside report timestamps, analyzed-event
+counts, and interpretation guidance. `summary` contains descriptive statistics;
+`analysis` contains rule configuration and detector coverage.
+`analyzed_percent_of_available` is null when availability is unknown or zero.
+Source-category eligibility does not imply a message matched a predicate,
+grouping field, or alert threshold. Finding totals are not unique event totals:
+rules may overlap. An empty rule list explicitly reports disabled detection.
 
 ## Detection and configuration
 
@@ -72,8 +126,8 @@ or no access to system logs. Empty results do not establish absence of threats.
 | `kernel_errors` | Kernel | 1 fault/resource-exhaustion record | Host |
 | `service_failures` | systemd | 1 service-failure record | Emitting unit within host |
 
-Thresholds are initial heuristics,
-not statistical baselines. Findings include explanations and up to three raw
+Thresholds are configurable heuristics, not statistical baselines.
+Findings include explanations and up to three normalized
 evidence entries. Protect reports because log messages may contain private data.
 
 Override the full rule list using `--rules rules.json`. An empty list disables
@@ -123,8 +177,8 @@ close. Very large intervals can consume temporary disk space and time; retained
 large messages can still consume significant memory. `--all` prevents journalctl
 from eliding long field values. No service, priority, or source filters are applied.
 
-JSON schema version 2 adds a `collection` object; text reports display the same
-coverage information:
+The JSON `collection` object and text report display the same coverage
+information:
 
 - `events_available`: raw readable entries in the requested interval, or `null`
   when the scan failed or timed out. This is not a count of inaccessible logs.
@@ -179,8 +233,10 @@ implemented.
 | `log_analyzer/collector.py` | `collect(...)` runs journalctl, retains a bounded sample, and returns a `CollectionResult` with events, warnings, and coverage. |
 | `log_analyzer/normalize.py` | `normalize(record)` converts a decoded journal object into immutable `Event` metadata; `Event.to_dict()` prepares JSON-compatible output. |
 | `log_analyzer/rules.py` | `Rule` describes a detector; `load_rules(path)` validates configuration; `detect(events, rules=None)` applies sliding windows. |
+| `log_analyzer/summary.py` | `summarize(events)` computes descriptive totals, metadata quality, hourly volume, and bounded rankings without reading additional logs. |
 | `log_analyzer/report.py` | `build_report(...)` creates the shared report dictionary; `render_text(report)` formats that dictionary for people. |
 | `tests/test_analyzer.py` | Synthetic fixtures and mocked journal processes cover collection, normalization, rules, reports, and CLI errors. |
+| `tests/test_reports.py` | Mixed-source fixtures verify summary totals, authentication indicators, bounded rankings, empty input, custom rules, and safe text rendering. |
 | `INVESTIGATION.md` | Documents the original one-hour versus 24-hour count discrepancy and verification results. |
 
 The processing sequence is:
@@ -189,7 +245,8 @@ The processing sequence is:
 2. Scan the readable interval into a temporary file and count observed records.
 3. Retain the newest N raw records and normalize them, counting rejected records.
 4. Sort accepted events by UTC timestamp and evaluate matching rules per group.
-5. Build a schema-version-2 report and serialize it as JSON or text.
+5. Summarize analyzed metadata, build a schema-version-3 report, and serialize it
+   as JSON or text.
 
 `CollectionResult` supports `events, warnings = collect(...)` for compatibility;
 use its `.coverage` attribute for accounting. `build_report` accepts optional
@@ -213,16 +270,6 @@ log text, and both output formats.
 To extend support, add journal-field handling in `normalize.py`, then add synthetic
 fixtures that exercise the format. Add configurable literal-match rules through
 JSON, or update `DEFAULT_RULES` when a new built-in heuristic is warranted.
-Changes to coverage fields should update both renderers' expectations, this
-README, and accounting tests. Keep user-supplied messages and rules as data;
+Changes to coverage or summary fields should update both renderers' expectations,
+this README, and accounting tests. Keep user-supplied messages and rules as data;
 do not add shell execution or automatic system remediation.
-
-## Initial review and implementation
-
-The supplied workspace was empty, so there was no implementation to audit.
-The foundation is split into collection, normalization, declarative rules,
-reporting, and CLI modules. Synthetic tests cover source classification, UTC
-timestamps, aggregation windows, configuration, untrusted text, and journal
-availability. Next steps include fixtures from supported Ubuntu installations,
-additional message formats, and streaming collection if snapshot memory usage
-becomes a constraint.
